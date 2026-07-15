@@ -36,7 +36,8 @@ CORRELATIONS=( # digi_channel:FERS_board:FERS_expression (from converted express
 )
 CORRELATION_ACCEPT_FACTOR=2 #fraction of events threshold for accepting correlated run. 10 = at least 1/10 events have to be correlated. Beam usage: should be 2
 CORRELATION_INITIAL_OFFSET=0 #will be overwritten by automatic guess unless specified in the analysis_overrides.sh
-CORRELATION_INITIAL_RANGE=500 #will be overwritten by automatic guess unless specified in the analysis_overrides.sh
+#CORRELATION_INITIAL_RANGE=500 #will be overwritten by automatic guess unless specified in the analysis_overrides.sh
+CORRELATION_INITIAL_RANGE=10 #will be overwritten by automatic guess unless specified in the analysis_overrides.sh
 
 #set -Eeuo pipefail
 set -Eeu
@@ -208,7 +209,7 @@ else
 	exit 3
     fi
     CORRELATION_INITIAL_OFFSET=$(( DIGI_TS - FERSTS ))
-    CORRELATION_INITIAL_RANGE=100
+    #CORRELATION_INITIAL_RANGE=100
     echo "TRACE: Nearest digitizer run timestamp: $DIGI_TS. Difference: $DIGI_TS_DIFF s. New correlation offset guess ${CORRELATION_INITIAL_OFFSET}, range ${CORRELATION_INITIAL_RANGE}. It will be overwritten - just for info" >&2
 fi
 #overwrite the digitizer with a manual number if given as a parameter
@@ -321,7 +322,8 @@ for CH in "${DIGI_CHANNELS_TO_ANALYZE[@]}"; do
 done
 
 ###################################################################################
-# refinement of the offset guess
+# offset guess
+# OLD: refinement of the offset guess
 ###################################################################################
 # another method for a offset guess - taking the first event. This works only if the first event is the same, or within the range
 
@@ -342,14 +344,15 @@ read -r _ _ _ _ _ DIGIFIRSTTS _ <<<${DIGITSLINE}
 GUESS_OFFSET_FIRSTEVENT=$(echo "$FERSFIRSTEVENTTS - 0.000000008 * $DIGIFIRSTTS" | bc -l)
 echo "first TS of FERS=${FERSFIRSTEVENTTS} s. First digi TS=${DIGIFIRSTTS} bin. offset guess=${GUESS_OFFSET_FIRSTEVENT} s"
 CORRELATION_INITIAL_OFFSET=${GUESS_OFFSET_FIRSTEVENT}
-CORRELATION_INITIAL_RANGE=1
+#CORRELATION_INITIAL_RANGE=1
 # we have to rewrite the offset again if overrides are provided
 if [[ -f  "${QCPATH}/analysis_overrides.sh" ]] ; then
     load_baseline "${QCPATH}/analysis_overrides.sh" || exit 1
 fi
 
 ###################################################################################
-# correlation
+# correlation - refinement of the offset using brute force
+# OLD: correlation
 ###################################################################################
 OFFSET=0
 for CORR in "${CORRELATIONS[@]}"; do

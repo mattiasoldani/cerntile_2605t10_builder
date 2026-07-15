@@ -1,4 +1,4 @@
-// DIGI-only event builder for runs without a FERS counterpart
+// digitiser-only event builder for runs without a FERS counterpart in the FCC TileCal beamtest data
 // by M. Soldani, 2026 - developed with OpenAI Codex (GPT-5.5)
 
 /* compilation:

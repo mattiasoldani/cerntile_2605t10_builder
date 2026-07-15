@@ -10,10 +10,10 @@ import numpy as np
 import time
 
 # set settings
-pathdatamaster = "../"
-pathqc = pathdatamaster + "../data/QC/"
-pathin = pathdatamaster + "../data/input/"
-pathout = pathdatamaster + "../data/output/sync_lists/"
+pathdatamaster = "../data/"
+pathqc = pathdatamaster + "QC/"
+pathin = pathdatamaster + "input/"
+pathout = pathdatamaster + "output/sync_lists/"
 listname = "FERS_runList_beams" # FERS_runList_total / FERS_runList_beams
 fers_bd = [0 , 1]
 digi_ch = {0:6 , 1:7}
