@@ -47,6 +47,7 @@ for run in runs:
     out_dict[run] = {}
     
     for idigi in ls_digi_id:
+        if (idigi%5000 == 0): print("Doing digitiser event %d..." % idigi)
         out_dict[run][idigi] = [np.nan for i in fers_bd]
         for bd in fers_list:
             if (idigi in fers_list[bd][0]): 
