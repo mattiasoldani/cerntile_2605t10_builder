@@ -2,8 +2,8 @@ test
 
 data/TEST_root
 
-data/QC
+data/QC/*
 !data/QC/.keep
 
-data/output/sync_lists
+data/output/sync_lists/*
 !data/output/sync_lists/.keep
