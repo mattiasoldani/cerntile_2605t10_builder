@@ -1,4 +1,4 @@
-# FERS runs acquired together with digitiser
+# FERS runs acquired together w/ digitiser
 1027
 1029
 1030
