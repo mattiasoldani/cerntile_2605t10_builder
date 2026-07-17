@@ -3,7 +3,7 @@ test
 data/TEST_root
 
 data/QC
-!.keep
+!data/QC/.keep
 
 data/output/sync_lists
-!.keep
+!data/output/sync_lists/.keep
