@@ -1,3 +1,9 @@
 test
+
 data/TEST_root
+
 data/QC
+!.keep
+
+data/output/sync_lists
+!.keep
