@@ -1,12 +1,16 @@
 # analyse the FCC TileCal beamtest QC data and build common lists of synced events
 # by M. Soldani, 2026
 
+# usage: python3 sync_lists.py
+# all parameters to be set inside the script
+
 ''' compilation:
 python3 sync_lists.py
 '''
 
 # import imports
 import numpy as np
+import os
 import time
 
 # set settings
@@ -15,6 +19,7 @@ pathqc = pathdatamaster + "QC/"
 pathin = pathdatamaster + "input/"
 pathout = pathdatamaster + "output/sync_lists/"
 listname = "FERS_runList_withDigi" # FERS_runList_total / FERS_runList_beams / FERS_runList_withDigi
+b_recreate = False
 fers_bd = [0 , 1]
 digi_ch = {0:6 , 1:7}
 fers_ch = 0
@@ -27,6 +32,12 @@ runs = np.genfromtxt(pathin+"%s.txt"%listname, dtype=int, comments="#")
 
 out_dict = {}
 for run in runs:
+    out_listname = pathout+"%d.txt"%run
+    if (not b_recreate) and os.path.isfile(out_listname):
+        print("Run%d output list already found, skipping..." % run)
+        print("---")
+        continue
+
     fers_list = {}
     
     try:
@@ -53,7 +64,7 @@ for run in runs:
             if (idigi in fers_list[bd][0]): 
                 out_dict[run][idigi][bd] = int(fers_list[bd][1][fers_list[bd][0]==idigi][0])
 
-    with open(pathout+"%d.txt"%run, "w") as f:
+    with open(out_listname, "w") as f:
         for i in out_dict[run].keys():
             out_str = "%d" % i
             for ibd, bd in enumerate(fers_bd):

@@ -7,3 +7,5 @@ data/QC/*
 
 data/output/sync_lists/*
 !data/output/sync_lists/.keep
+
+__pycache__
