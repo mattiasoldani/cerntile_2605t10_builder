@@ -153,6 +153,32 @@ run_cmd()
     fi
 }
 
+run_cmd_for_file()
+{
+    local cleanup_path="$1"
+    shift
+
+    printf '+'
+    printf ' %q' "$@"
+    printf '\n'
+
+    ((run_count += 1))
+    if [[ "${dry_run}" -eq 0 ]]; then
+        if "$@"; then
+            return 0
+        fi
+
+        local status=$?
+        ((fail_count += 1))
+        if [[ -e "${cleanup_path}" ]]; then
+            rm -f -- "${cleanup_path}" || \
+                echo "Warning: failed to remove incomplete output ROOT file ${cleanup_path}." >&2
+        fi
+        echo "Warning: command failed with exit status ${status}; discarded ${cleanup_path} and continuing with next file." >&2
+        return 0
+    fi
+}
+
 strip_inline_comment()
 {
     local line="$1"
@@ -161,10 +187,68 @@ strip_inline_comment()
     printf '%s\n' "${line}"
 }
 
+digi_files=()
+expand_digi_inputs()
+{
+    local digi_id="$1"
+    digi_files=()
+
+    if [[ -d "${digi_path}" ]]; then
+        local restore_nullglob=0
+        shopt -q nullglob || restore_nullglob=1
+        shopt -s nullglob
+        digi_files=( "${digi_path}/${digi_id}_"*.root )
+        if [[ "${restore_nullglob}" -eq 1 ]]; then
+            shopt -u nullglob
+        fi
+        local regular_files=()
+        local digi_file
+        for digi_file in "${digi_files[@]}"; do
+            [[ -f "${digi_file}" ]] && regular_files+=( "${digi_file}" )
+        done
+        digi_files=( "${regular_files[@]}" )
+    else
+        digi_files=( "${digi_path}" )
+    fi
+}
+
+digi_split_id()
+{
+    local digi_file="$1"
+    local digi_id="$2"
+    local stem
+    stem="$(basename "${digi_file}")"
+    stem="${stem%.root}"
+    stem="${stem#"${digi_id}_"}"
+    printf '%s\n' "${stem}"
+}
+
+run_digi_file()
+{
+    local digi_id="$1"
+    local digi_file="$2"
+    local split_id
+    split_id="$(digi_split_id "${digi_file}" "${digi_id}")"
+    run_cmd_for_file "${output_dir}/XXXX_${digi_id}_${split_id}.root" \
+        "${script_dir}/builder_digi" "${digi_file}" "${digi_id}" "${output_dir}" "${recreate_outputs}"
+}
+
 run_digi()
 {
     local digi_id="$1"
-    run_cmd "${script_dir}/builder_digi" "${digi_path}" "${digi_id}" "${output_dir}" "${recreate_outputs}"
+    expand_digi_inputs "${digi_id}"
+
+    if [[ "${#digi_files[@]}" -eq 0 ]]; then
+        ((run_count += 1))
+        ((fail_count += 1))
+        echo "Warning: no digi ROOT files found for run ${digi_id} in ${digi_path}; continuing with next run." >&2
+        return 0
+    fi
+
+    local digi_file
+    for digi_file in "${digi_files[@]}"; do
+        run_digi_file "${digi_id}" "${digi_file}"
+    done
 }
 
 run_fers()
@@ -185,8 +269,23 @@ run_global()
         return 0
     fi
 
-    run_cmd "${script_dir}/builder" "${sync_list}" "${fers_dir}/Run${fers_id}.dat.root" \
-        "${digi_path}" "${digi_id}" "${output_dir}" "${recreate_outputs}"
+    expand_digi_inputs "${digi_id}"
+
+    if [[ "${#digi_files[@]}" -eq 0 ]]; then
+        ((run_count += 1))
+        ((fail_count += 1))
+        echo "Warning: no digi ROOT files found for paired run DIGI=${digi_id}, FERS=${fers_id} in ${digi_path}; continuing with next run." >&2
+        return 0
+    fi
+
+    local digi_file
+    local split_id
+    for digi_file in "${digi_files[@]}"; do
+        split_id="$(digi_split_id "${digi_file}" "${digi_id}")"
+        run_cmd_for_file "${output_dir}/${fers_id}_${digi_id}_${split_id}.root" \
+            "${script_dir}/builder" "${sync_list}" "${fers_dir}/Run${fers_id}.dat.root" \
+            "${digi_file}" "${digi_id}" "${output_dir}" "${recreate_outputs}"
+    done
 }
 
 case "${list_kind}" in
