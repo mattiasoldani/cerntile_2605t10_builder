@@ -24,6 +24,7 @@ dry_run=0
 run_count=0
 fail_count=0
 skip_count=0
+file_skip_count=0
 
 usage()
 {
@@ -157,6 +158,12 @@ run_cmd_for_file()
 {
     local cleanup_path="$1"
     shift
+
+    if [[ "${recreate_outputs}" == "0" && -e "${cleanup_path}" ]]; then
+        ((file_skip_count += 1))
+        echo "Keeping existing ${cleanup_path}; skipping before opening input ROOT file."
+        return 0
+    fi
 
     printf '+'
     printf ' %q' "$@"
@@ -339,8 +346,8 @@ while IFS= read -r raw_line || [[ -n "${raw_line}" ]]; do
 done < "${run_list}"
 
 if [[ "${fail_count}" -gt 0 ]]; then
-    echo "Completed ${run_count} command(s) with ${fail_count} failure(s) and ${skip_count} skipped paired run(s)." >&2
+    echo "Completed ${run_count} command(s) with ${fail_count} failure(s), ${skip_count} skipped paired run(s), and ${file_skip_count} skipped existing output file(s)." >&2
     exit 1
 fi
 
-echo "Completed ${run_count} command(s) with ${skip_count} skipped paired run(s)."
+echo "Completed ${run_count} command(s) with ${skip_count} skipped paired run(s) and ${file_skip_count} skipped existing output file(s)."
