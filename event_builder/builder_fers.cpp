@@ -12,6 +12,7 @@ g++ -std=c++17 builder_fers.cpp $(root-config --cflags --libs) -o builder_fers
 */
 
 #include <TDirectory.h>
+#include <TError.h>
 #include <TFile.h>
 #include <TKey.h>
 #include <TObject.h>
@@ -21,12 +22,15 @@ g++ -std=c++17 builder_fers.cpp $(root-config --cflags --libs) -o builder_fers
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <streambuf>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #define NWFSAMPLES 1030
@@ -36,6 +40,73 @@ g++ -std=c++17 builder_fers.cpp $(root-config --cflags --libs) -o builder_fers
 namespace fs = std::filesystem;
 
 namespace {
+
+class LinePrefixBuf : public std::streambuf {
+public:
+    LinePrefixBuf(std::streambuf* dest, std::string prefix)
+        : dest_(dest), prefix_(std::move(prefix))
+    {
+    }
+
+protected:
+    int overflow(int ch) override
+    {
+        if (ch == traits_type::eof()) return traits_type::not_eof(ch);
+        if (at_line_start_) {
+            dest_->sputn(prefix_.data(), static_cast<std::streamsize>(prefix_.size()));
+            at_line_start_ = false;
+        }
+        if (dest_->sputc(static_cast<char>(ch)) == traits_type::eof()) return traits_type::eof();
+        if (ch == '\n') at_line_start_ = true;
+        return ch;
+    }
+
+    int sync() override
+    {
+        return dest_->pubsync();
+    }
+
+private:
+    std::streambuf* dest_ = nullptr;
+    std::string prefix_;
+    bool at_line_start_ = true;
+};
+
+class ScopedStreamPrefix {
+public:
+    ScopedStreamPrefix(std::ostream& stream, const std::string& prefix)
+        : stream_(stream), old_buf_(stream.rdbuf()), prefix_buf_(old_buf_, prefix)
+    {
+        stream_.rdbuf(&prefix_buf_);
+    }
+
+    ~ScopedStreamPrefix()
+    {
+        stream_.rdbuf(old_buf_);
+    }
+
+private:
+    std::ostream& stream_;
+    std::streambuf* old_buf_ = nullptr;
+    LinePrefixBuf prefix_buf_;
+};
+
+void rootErrorHandler(int level, Bool_t abort_bool, const char* location, const char* msg)
+{
+    const char* label = "Info";
+    if (level >= kFatal) {
+        label = "Fatal";
+    } else if (level >= kSysError) {
+        label = "SysError";
+    } else if (level >= kError) {
+        label = "Error";
+    } else if (level >= kWarning) {
+        label = "Warning";
+    }
+
+    std::cerr << label << " in <" << location << ">: " << msg << '\n';
+    if (abort_bool) std::abort();
+}
 
 struct FersBuffers {
     Double_t TStamp_us[NFERSBDS] = {};
@@ -475,13 +546,19 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    std::string log_prefix;
     try {
         const std::string fers_path = argv[1];
         const std::string output_path = argv[2];
         const bool recreate_outputs = parseRecreateOutputs(argc, argv);
+        const std::string fers_id = firstDigitGroup(fs::path(fers_path).filename().string());
+        log_prefix = "[" + (fers_id.empty() ? "?" : fers_id) + ", -1, 0000000000] ";
+        ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+        ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
+        SetErrorHandler(rootErrorHandler);
         buildFersOnlyFile(fers_path, output_path, recreate_outputs);
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << '\n';
+        std::cerr << log_prefix << "Error: " << e.what() << '\n';
         return 2;
     }
 

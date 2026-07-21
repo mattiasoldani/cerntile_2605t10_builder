@@ -12,6 +12,7 @@ g++ -std=c++17 builder.cpp $(root-config --cflags --libs) -o builder
 */
 
 #include <TDirectory.h>
+#include <TError.h>
 #include <TFile.h>
 #include <TKey.h>
 #include <TObject.h>
@@ -23,12 +24,14 @@ g++ -std=c++17 builder.cpp $(root-config --cflags --libs) -o builder
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdlib>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <streambuf>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -45,6 +48,73 @@ g++ -std=c++17 builder.cpp $(root-config --cflags --libs) -o builder
 namespace fs = std::filesystem;
 
 namespace {
+
+class LinePrefixBuf : public std::streambuf {
+public:
+    LinePrefixBuf(std::streambuf* dest, std::string prefix)
+        : dest_(dest), prefix_(std::move(prefix))
+    {
+    }
+
+protected:
+    int overflow(int ch) override
+    {
+        if (ch == traits_type::eof()) return traits_type::not_eof(ch);
+        if (at_line_start_) {
+            dest_->sputn(prefix_.data(), static_cast<std::streamsize>(prefix_.size()));
+            at_line_start_ = false;
+        }
+        if (dest_->sputc(static_cast<char>(ch)) == traits_type::eof()) return traits_type::eof();
+        if (ch == '\n') at_line_start_ = true;
+        return ch;
+    }
+
+    int sync() override
+    {
+        return dest_->pubsync();
+    }
+
+private:
+    std::streambuf* dest_ = nullptr;
+    std::string prefix_;
+    bool at_line_start_ = true;
+};
+
+class ScopedStreamPrefix {
+public:
+    ScopedStreamPrefix(std::ostream& stream, const std::string& prefix)
+        : stream_(stream), old_buf_(stream.rdbuf()), prefix_buf_(old_buf_, prefix)
+    {
+        stream_.rdbuf(&prefix_buf_);
+    }
+
+    ~ScopedStreamPrefix()
+    {
+        stream_.rdbuf(old_buf_);
+    }
+
+private:
+    std::ostream& stream_;
+    std::streambuf* old_buf_ = nullptr;
+    LinePrefixBuf prefix_buf_;
+};
+
+void rootErrorHandler(int level, Bool_t abort_bool, const char* location, const char* msg)
+{
+    const char* label = "Info";
+    if (level >= kFatal) {
+        label = "Fatal";
+    } else if (level >= kSysError) {
+        label = "SysError";
+    } else if (level >= kError) {
+        label = "Error";
+    } else if (level >= kWarning) {
+        label = "Warning";
+    }
+
+    std::cerr << label << " in <" << location << ">: " << msg << '\n';
+    if (abort_bool) std::abort();
+}
 
 struct SyncRow {
     long long digi = -1;
@@ -833,6 +903,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    std::string log_prefix;
     try {
         const std::string sync_path = argv[1];
         const std::string fers_path = argv[2];
@@ -844,6 +915,11 @@ int main(int argc, char** argv)
         if (fers_id.empty()) {
             throw std::runtime_error("Cannot extract FERS ID from ROOT filename: " + fers_path);
         }
+        log_prefix = "[" + fers_id + ", " + digi_run_id + ", "
+            + digiSplitId(digi_path, digi_run_id) + "] ";
+        ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+        ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
+        SetErrorHandler(rootErrorHandler);
 
         const auto sync_rows = readSyncRows(sync_path);
         const auto sync_by_digi = rowsByDigi(sync_rows);
@@ -880,7 +956,7 @@ int main(int argc, char** argv)
 
         std::cout << "All done. Total events written: " << total << '\n';
     } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << '\n';
+        std::cerr << log_prefix << "Error: " << e.what() << '\n';
         return 2;
     }
 

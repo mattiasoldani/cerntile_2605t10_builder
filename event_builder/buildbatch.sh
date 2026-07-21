@@ -137,17 +137,19 @@ require_binary_marker()
 
 run_cmd()
 {
+    printf '\n'
     printf '+'
     printf ' %q' "$@"
     printf '\n'
 
     ((run_count += 1))
     if [[ "${dry_run}" -eq 0 ]]; then
-        if "$@"; then
+        local status=0
+        "$@" || status=$?
+        if [[ "${status}" -eq 0 ]]; then
             return 0
         fi
 
-        local status=$?
         ((fail_count += 1))
         echo "Warning: command failed with exit status ${status}; continuing with next run." >&2
         return 0
@@ -160,22 +162,25 @@ run_cmd_for_file()
     shift
 
     if [[ "${recreate_outputs}" == "0" && -e "${cleanup_path}" ]]; then
+        printf '\n'
         ((file_skip_count += 1))
         echo "Keeping existing ${cleanup_path}; skipping before opening input ROOT file."
         return 0
     fi
 
+    printf '\n'
     printf '+'
     printf ' %q' "$@"
     printf '\n'
 
     ((run_count += 1))
     if [[ "${dry_run}" -eq 0 ]]; then
-        if "$@"; then
+        local status=0
+        "$@" || status=$?
+        if [[ "${status}" -eq 0 ]]; then
             return 0
         fi
 
-        local status=$?
         ((fail_count += 1))
         if [[ -e "${cleanup_path}" ]]; then
             rm -f -- "${cleanup_path}" || \
