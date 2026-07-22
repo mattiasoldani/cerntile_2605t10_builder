@@ -714,6 +714,32 @@ std::string outputFilePath(
     return (fs::path(output_path) / name).string();
 }
 
+std::string pairedLogPrefix(
+    const std::string& fers_id,
+    const std::string& digi_run_id,
+    const std::string& digi_file_path)
+{
+    return "[" + fers_id + ", " + digi_run_id + ", "
+        + digiSplitId(digi_file_path, digi_run_id) + "] ";
+}
+
+std::string pairedRunLogPrefix(const std::string& fers_id, const std::string& digi_run_id)
+{
+    return "[" + fers_id + ", " + digi_run_id + "] ";
+}
+
+std::string joinDigiSplitIds(
+    const std::vector<std::string>& digi_file_paths,
+    const std::string& digi_run_id)
+{
+    std::ostringstream out;
+    for (std::size_t i = 0; i < digi_file_paths.size(); ++i) {
+        if (i > 0) out << ", ";
+        out << digiSplitId(digi_file_paths[i], digi_run_id);
+    }
+    return out.str();
+}
+
 bool parseRecreateOutputs(int argc, char** argv)
 {
     if (argc == 6) return true;
@@ -808,6 +834,18 @@ void checkDigiRootFiles(const std::vector<std::string>& digi_files)
 {
     for (const auto& digi_path : digi_files) {
         checkRootFileInChild(digi_path, "digi", checkDigiRootFileContents);
+    }
+}
+
+void removeIncompleteOutput(const std::string& out_path)
+{
+    if (!fs::exists(out_path)) return;
+
+    std::error_code ec;
+    fs::remove(out_path, ec);
+    if (ec) {
+        std::cerr << "Warning: failed to remove incomplete output ROOT file "
+                  << out_path << ".\n";
     }
 }
 
@@ -1053,14 +1091,11 @@ int main(int argc, char** argv)
         const std::string digi_run_id = argv[4];
         const std::string output_path = argv[5];
         const bool recreate_outputs = parseRecreateOutputs(argc, argv);
+        const bool digi_path_is_directory = fs::is_directory(digi_path);
         const std::string fers_id = firstDigitGroup(fs::path(fers_path).filename().string());
         if (fers_id.empty()) {
             throw std::runtime_error("Cannot extract FERS ID from ROOT filename: " + fers_path);
         }
-        log_prefix = "[" + fers_id + ", " + digi_run_id + ", "
-            + digiSplitId(digi_path, digi_run_id) + "] ";
-        ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
-        ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
         SetErrorHandler(rootErrorHandler);
 
         const auto digi_files = expandDigiInputs(digi_path, digi_run_id);
@@ -1069,11 +1104,14 @@ int main(int argc, char** argv)
             throw std::runtime_error(
                 "No digi ROOT files found for run " + digi_run_id + " in " + digi_path);
         }
+        log_prefix = pairedRunLogPrefix(fers_id, digi_run_id);
         fs::create_directories(output_path);
         const auto pending_digi_files = filesToBuild(
             digi_files, output_path, fers_id, digi_run_id, recreate_outputs);
 
         if (pending_digi_files.empty()) {
+            ScopedStreamPrefix run_cout_prefix(std::cout, log_prefix);
+            ScopedStreamPrefix run_cerr_prefix(std::cerr, log_prefix);
             for (const auto& digi_file : digi_files) {
                 const std::string out_path = outputFilePath(output_path, fers_id, digi_run_id, digi_file);
                 std::cout << "Keeping existing " << out_path << "; skipping.\n";
@@ -1083,7 +1121,56 @@ int main(int argc, char** argv)
         }
 
         checkFersRootFile(fers_path);
-        checkDigiRootFiles(pending_digi_files);
+
+        if (!recreate_outputs) {
+            for (const auto& digi_file : digi_files) {
+                const std::string out_path = outputFilePath(output_path, fers_id, digi_run_id, digi_file);
+                if (!fs::exists(out_path)) continue;
+
+                log_prefix = pairedLogPrefix(fers_id, digi_run_id, digi_file);
+                ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+                ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
+                std::cout << "Keeping existing " << out_path << "; skipping.\n";
+            }
+        }
+
+        int failures = 0;
+        std::vector<std::string> failed_digi_files;
+        std::vector<std::string> buildable_digi_files;
+        for (const auto& digi_file : pending_digi_files) {
+            log_prefix = pairedLogPrefix(fers_id, digi_run_id, digi_file);
+            ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+            ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
+
+            try {
+                checkDigiRootFiles({digi_file});
+                buildable_digi_files.push_back(digi_file);
+            } catch (const std::exception& e) {
+                if (!digi_path_is_directory) throw;
+
+                ++failures;
+                failed_digi_files.push_back(digi_file);
+                const std::string out_path = outputFilePath(output_path, fers_id, digi_run_id, digi_file);
+                removeIncompleteOutput(out_path);
+                std::cerr << "Warning: failed to check " << digi_file
+                          << ": " << e.what() << "; continuing with next file.\n";
+            }
+        }
+
+        if (buildable_digi_files.empty()) {
+            log_prefix = pairedRunLogPrefix(fers_id, digi_run_id);
+            ScopedStreamPrefix run_cout_prefix(std::cout, log_prefix);
+            ScopedStreamPrefix run_cerr_prefix(std::cerr, log_prefix);
+            std::cout << "All done. Total events written: 0\n";
+            if (failures > 0) {
+                std::cerr << "Warning: " << failures << " digi ROOT file"
+                          << (failures == 1 ? "" : "s")
+                          << " (" << joinDigiSplitIds(failed_digi_files, digi_run_id) << ")"
+                          << " failed during standalone directory processing.\n";
+                return 2;
+            }
+            return 0;
+        }
 
         const auto sync_rows = readSyncRows(sync_path);
         const auto sync_by_digi = rowsByDigi(sync_rows);
@@ -1093,25 +1180,57 @@ int main(int argc, char** argv)
         if (fers_file.IsZombie()) throw std::runtime_error("Cannot open FERS ROOT file: " + fers_path);
         TTree* fers_tree = requireDataTree(fers_file);
         TTree* info_tree = treeOrNull(fers_file, "info");
-        if (!info_tree) {
-            std::cerr << "Warning: no FERS info tree found in " << fers_path << ".\n";
-        }
-        const FersIndex fers_index = buildFersIndex(*fers_tree);
+        FersIndex fers_index;
+        {
+            log_prefix = pairedRunLogPrefix(fers_id, digi_run_id);
+            ScopedStreamPrefix run_cout_prefix(std::cout, log_prefix);
+            ScopedStreamPrefix run_cerr_prefix(std::cerr, log_prefix);
+            if (!info_tree) {
+                std::cerr << "Warning: no FERS info tree found in " << fers_path << ".\n";
+            }
+            fers_index = buildFersIndex(*fers_tree);
 
-        std::cout << "Indexed FERS entries:";
-        for (int board = 0; board < NFERSBDS; ++board) {
-            std::cout << " board" << board << "=" << fers_index.boards[board].size();
+            std::cout << "Indexed FERS entries:";
+            for (int board = 0; board < NFERSBDS; ++board) {
+                std::cout << " board" << board << "=" << fers_index.boards[board].size();
+            }
+            std::cout << '\n';
         }
-        std::cout << '\n';
 
         Long64_t total = 0;
-        for (const auto& digi_path : digi_files) {
-            total += buildOneFile(
-                digi_path, fers_id, digi_run_id, *fers_tree, info_tree,
-                fers_index, sync_by_digi, sync_fers_ids, output_path, recreate_outputs);
+        for (const auto& digi_path : buildable_digi_files) {
+            log_prefix = pairedLogPrefix(fers_id, digi_run_id, digi_path);
+            ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+            ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
+
+            const std::string out_path = outputFilePath(output_path, fers_id, digi_run_id, digi_path);
+
+            try {
+                total += buildOneFile(
+                    digi_path, fers_id, digi_run_id, *fers_tree, info_tree,
+                    fers_index, sync_by_digi, sync_fers_ids, output_path, recreate_outputs);
+            } catch (const std::exception& e) {
+                if (!digi_path_is_directory) throw;
+
+                ++failures;
+                failed_digi_files.push_back(digi_path);
+                removeIncompleteOutput(out_path);
+                std::cerr << "Warning: failed to build " << digi_path
+                          << ": " << e.what() << "; continuing with next file.\n";
+            }
         }
 
+        log_prefix = pairedRunLogPrefix(fers_id, digi_run_id);
+        ScopedStreamPrefix run_cout_prefix(std::cout, log_prefix);
+        ScopedStreamPrefix run_cerr_prefix(std::cerr, log_prefix);
         std::cout << "All done. Total events written: " << total << '\n';
+        if (failures > 0) {
+            std::cerr << "Warning: " << failures << " digi ROOT file"
+                      << (failures == 1 ? "" : "s")
+                      << " (" << joinDigiSplitIds(failed_digi_files, digi_run_id) << ")"
+                      << " failed during standalone directory processing.\n";
+            return 2;
+        }
     } catch (const std::exception& e) {
         std::cerr << log_prefix << "Error: " << e.what() << '\n';
         return 2;

@@ -363,6 +363,13 @@ std::string outputFilePath(
     return (fs::path(output_path) / name).string();
 }
 
+std::string digiOnlyLogPrefix(
+    const std::string& digi_run_id,
+    const std::string& digi_file_path)
+{
+    return "[" + digi_run_id + ", " + digiSplitId(digi_file_path, digi_run_id) + "] ";
+}
+
 bool parseRecreateOutputs(int argc, char** argv)
 {
     if (argc == 4) return true;
@@ -469,10 +476,7 @@ int main(int argc, char** argv)
         const std::string digi_run_id = argv[2];
         const std::string output_path = argv[3];
         const bool recreate_outputs = parseRecreateOutputs(argc, argv);
-        log_prefix = "[-1, " + digi_run_id + ", "
-            + digiSplitId(digi_path, digi_run_id) + "] ";
-        ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
-        ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
+        log_prefix = "[" + digi_run_id + "] ";
         SetErrorHandler(rootErrorHandler);
         const auto digi_files = expandDigiInputs(digi_path, digi_run_id);
 
@@ -484,9 +488,15 @@ int main(int argc, char** argv)
 
         Long64_t total = 0;
         for (const auto& digi_file : digi_files) {
+            log_prefix = digiOnlyLogPrefix(digi_run_id, digi_file);
+            ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+            ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
             total += buildOneFile(digi_file, digi_run_id, output_path, recreate_outputs);
         }
 
+        log_prefix = "[" + digi_run_id + "] ";
+        ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
+        ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
         std::cout << "All done. Total events written: " << total << '\n';
     } catch (const std::exception& e) {
         std::cerr << log_prefix << "Error: " << e.what() << '\n';

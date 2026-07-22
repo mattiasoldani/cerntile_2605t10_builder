@@ -552,7 +552,7 @@ int main(int argc, char** argv)
         const std::string output_path = argv[2];
         const bool recreate_outputs = parseRecreateOutputs(argc, argv);
         const std::string fers_id = firstDigitGroup(fs::path(fers_path).filename().string());
-        log_prefix = "[" + (fers_id.empty() ? "?" : fers_id) + ", -1, 0000000000] ";
+        log_prefix = "[" + (fers_id.empty() ? "?" : fers_id) + "] ";
         ScopedStreamPrefix cout_prefix(std::cout, log_prefix);
         ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
         SetErrorHandler(rootErrorHandler);
