@@ -15,6 +15,7 @@ g++ -std=c++17 builder.cpp $(root-config --cflags --libs) -o builder
 #include <TError.h>
 #include <TFile.h>
 #include <TKey.h>
+#include <TLeaf.h>
 #include <TObject.h>
 #include <TString.h>
 #include <TTimeStamp.h>
@@ -40,6 +41,9 @@ g++ -std=c++17 builder.cpp $(root-config --cflags --libs) -o builder
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #define NWFSAMPLES 1030
 #define NFERSBDS 2 
@@ -281,6 +285,49 @@ TTree* requireDataTree(TFile& file)
     return firstTree(file);
 }
 
+void requireBranch(TTree& tree, const char* branch_name)
+{
+    if (!tree.GetBranch(branch_name)) {
+        throw std::runtime_error(
+            "Missing branch '" + std::string(branch_name) + "' in " + tree.GetName());
+    }
+}
+
+TLeaf* requireLeaf(TTree& tree, const char* leaf_name)
+{
+    auto* leaf = tree.GetLeaf(leaf_name);
+    if (!leaf) {
+        throw std::runtime_error(
+            "Missing leaf '" + std::string(leaf_name) + "' in " + tree.GetName());
+    }
+    return leaf;
+}
+
+void requireBranches(TTree& tree, const std::vector<const char*>& branch_names)
+{
+    for (const char* branch_name : branch_names) requireBranch(tree, branch_name);
+}
+
+void requireReadableEntry(TTree& tree, Long64_t entry)
+{
+    const Long64_t bytes = tree.GetEntry(entry);
+    if (bytes <= 0) {
+        throw std::runtime_error(
+            "Cannot read entry " + std::to_string(entry) + " from tree " + tree.GetName());
+    }
+}
+
+void checkAllEntriesReadable(TTree& tree)
+{
+    const Long64_t entries = tree.GetEntries();
+    if (entries <= 0) {
+        throw std::runtime_error("No entries found in tree " + std::string(tree.GetName()));
+    }
+    for (Long64_t entry = 0; entry < entries; ++entry) {
+        requireReadableEntry(tree, entry);
+    }
+}
+
 long long formulaValue(TTreeFormula& formula)
 {
     formula.UpdateFormulaLeaves();
@@ -352,6 +399,10 @@ FersIndex buildFersIndex(TTree& fers_tree)
 
 void setFersBranchAddresses(TTree& fers_tree, FersBuffers& buffers)
 {
+    requireBranches(fers_tree, {
+        "TStamp_us", "Num_Hits", "dTRef", "Trg_Id", "ch_mask",
+        "data_type", "PHA_LG", "PHA_HG", "ToA", "ToT"});
+
     fers_tree.SetBranchAddress("TStamp_us", buffers.TStamp_us);
     fers_tree.SetBranchAddress("Num_Hits", buffers.Num_Hits);
     fers_tree.SetBranchAddress("dTRef", buffers.dTRef);
@@ -366,8 +417,12 @@ void setFersBranchAddresses(TTree& fers_tree, FersBuffers& buffers)
 
 void setDigiBranchAddresses(TTree& digi_tree, DigiBuffers& buffers)
 {
-    const std::string trigger_type = digi_tree.GetLeaf("trigger_ts")->GetTypeName();
-    const std::string event_id_type = digi_tree.GetLeaf("event_id")->GetTypeName();
+    requireBranches(digi_tree, {
+        "run", "event0", "trigger_ts", "event_id", "ro_time",
+        "wave0", "wave1", "wave2", "wave3", "wave4", "wave5", "wave6", "wave7"});
+
+    const std::string trigger_type = requireLeaf(digi_tree, "trigger_ts")->GetTypeName();
+    const std::string event_id_type = requireLeaf(digi_tree, "event_id")->GetTypeName();
     buffers.trigger_ts_is_long = (trigger_type == "Long64_t");
     buffers.event_id_is_long = (event_id_type == "Long64_t");
 
@@ -669,6 +724,93 @@ bool parseRecreateOutputs(int argc, char** argv)
     throw std::runtime_error("recreate_outputs must be 0 or 1");
 }
 
+std::vector<std::string> filesToBuild(
+    const std::vector<std::string>& digi_files,
+    const std::string& output_path,
+    const std::string& fers_id,
+    const std::string& digi_run_id,
+    bool recreate_outputs)
+{
+    if (recreate_outputs) return digi_files;
+
+    std::vector<std::string> pending;
+    for (const auto& digi_file : digi_files) {
+        const std::string out_path = outputFilePath(output_path, fers_id, digi_run_id, digi_file);
+        if (!fs::exists(out_path)) pending.push_back(digi_file);
+    }
+    return pending;
+}
+
+void checkFersRootFileContents(const std::string& fers_path)
+{
+    TFile fers_file(fers_path.c_str(), "READ");
+    if (fers_file.IsZombie()) throw std::runtime_error("Cannot open FERS ROOT file: " + fers_path);
+    TTree* fers_tree = requireDataTree(fers_file);
+    FersBuffers buffers;
+    setFersBranchAddresses(*fers_tree, buffers);
+    checkAllEntriesReadable(*fers_tree);
+}
+
+void checkDigiRootFileContents(const std::string& digi_path)
+{
+    TFile digi_file(digi_path.c_str(), "READ");
+    if (digi_file.IsZombie()) throw std::runtime_error("Cannot open digi ROOT file: " + digi_path);
+    TTree* digi_tree = firstTree(digi_file);
+    DigiBuffers buffers;
+    setDigiBranchAddresses(*digi_tree, buffers);
+    checkAllEntriesReadable(*digi_tree);
+}
+
+void checkRootFileInChild(const std::string& path, const std::string& label, void (*check)(const std::string&))
+{
+    const pid_t pid = fork();
+    if (pid < 0) {
+        throw std::runtime_error("Cannot fork while checking " + label + " ROOT file: " + path);
+    }
+
+    if (pid == 0) {
+        try {
+            check(path);
+            _exit(0);
+        } catch (const std::exception& e) {
+            std::cerr << "Error while checking " << label << " ROOT file " << path
+                      << ": " << e.what() << '\n';
+            std::cerr.flush();
+            _exit(2);
+        } catch (...) {
+            std::cerr << "Unknown error while checking " << label << " ROOT file "
+                      << path << ".\n";
+            std::cerr.flush();
+            _exit(2);
+        }
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        throw std::runtime_error("Cannot wait for " + label + " ROOT file check: " + path);
+    }
+    if (WIFSIGNALED(status)) {
+        throw std::runtime_error(
+            label + " ROOT file check crashed with signal "
+            + std::to_string(WTERMSIG(status)) + ": " + path);
+    }
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        throw std::runtime_error(label + " ROOT file check failed: " + path);
+    }
+}
+
+void checkFersRootFile(const std::string& fers_path)
+{
+    checkRootFileInChild(fers_path, "FERS", checkFersRootFileContents);
+}
+
+void checkDigiRootFiles(const std::vector<std::string>& digi_files)
+{
+    for (const auto& digi_path : digi_files) {
+        checkRootFileInChild(digi_path, "digi", checkDigiRootFileContents);
+    }
+}
+
 Long64_t buildOneFile(
     const std::string& digi_path,
     const std::string& fers_id,
@@ -921,9 +1063,6 @@ int main(int argc, char** argv)
         ScopedStreamPrefix cerr_prefix(std::cerr, log_prefix);
         SetErrorHandler(rootErrorHandler);
 
-        const auto sync_rows = readSyncRows(sync_path);
-        const auto sync_by_digi = rowsByDigi(sync_rows);
-        const auto sync_fers_ids = syncedFersIds(sync_rows);
         const auto digi_files = expandDigiInputs(digi_path, digi_run_id);
 
         if (digi_files.empty()) {
@@ -931,6 +1070,24 @@ int main(int argc, char** argv)
                 "No digi ROOT files found for run " + digi_run_id + " in " + digi_path);
         }
         fs::create_directories(output_path);
+        const auto pending_digi_files = filesToBuild(
+            digi_files, output_path, fers_id, digi_run_id, recreate_outputs);
+
+        if (pending_digi_files.empty()) {
+            for (const auto& digi_file : digi_files) {
+                const std::string out_path = outputFilePath(output_path, fers_id, digi_run_id, digi_file);
+                std::cout << "Keeping existing " << out_path << "; skipping.\n";
+            }
+            std::cout << "All done. Total events written: 0\n";
+            return 0;
+        }
+
+        checkFersRootFile(fers_path);
+        checkDigiRootFiles(pending_digi_files);
+
+        const auto sync_rows = readSyncRows(sync_path);
+        const auto sync_by_digi = rowsByDigi(sync_rows);
+        const auto sync_fers_ids = syncedFersIds(sync_rows);
 
         TFile fers_file(fers_path.c_str(), "READ");
         if (fers_file.IsZombie()) throw std::runtime_error("Cannot open FERS ROOT file: " + fers_path);
